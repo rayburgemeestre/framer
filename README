@@ -1,4 +1,14 @@
   F       R AME
 [fFmpeg stReAMEr]
 
+
+Example is based on:
+
 https://github.com/SFML/SFML/wiki/Source:-Bouncing-ball
+
+I've tried for a long time but for now given up on supporting an audio channel.
+It would be fun to generate some sound effects whenever the ball hits a wall
+for example however I struggled to get this stuff in sync.
+With an old ffmpeg version I managed to get this interleaving working, but I
+don't want to downgrade ffmpeg for this feature right now.
+
