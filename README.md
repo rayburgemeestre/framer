@@ -28,7 +28,7 @@ First add as submodule:
 
 Then add path in your `CMakeLists.txt`
 
-    "${CMAKE_CURRENT_SOURCE_DIR}/libs/framer/"
+    include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/framer/")
 
 Use in source code:
 
