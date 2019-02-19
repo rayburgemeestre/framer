@@ -144,12 +144,16 @@ public:
     // todo private:
     stream_mode mode_;
     std::string filename_;
+    size_t bitrate_;
+    size_t fps_;
+    size_t width_;
+    size_t height_;
     std::chrono::high_resolution_clock::time_point current_time_;
     bool test = true;
 
 
-    frame_streamer(std::string filename, stream_mode mode = stream_mode::FILE)
-        : mode_(mode),
+    frame_streamer(std::string filename, size_t bitrate, int fps, int width, int height, stream_mode mode = stream_mode::FILE)
+        : bitrate_(bitrate), fps_(fps), width_(width), height_(height), mode_(mode),
         filename_(std::move(filename)),
         current_time_(std::chrono::high_resolution_clock::now())
     {
@@ -434,10 +438,10 @@ private:
             case AVMEDIA_TYPE_VIDEO:
                 c->codec_id = codec_id;
 
-                c->bit_rate = 400000;
+                c->bit_rate = bitrate_;
                 /* Resolution must be a multiple of two. */
-                c->width    = 400;
-                c->height   = 300;
+                c->width    = width_;
+                c->height   = height_;
                 /* timebase: This is the fundamental unit of time (in seconds) in terms
                  * of which frame timestamps are represented. For fixed-fps content,
                  * timebase should be 1/framerate and timestamp increments should be
