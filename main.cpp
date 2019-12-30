@@ -68,7 +68,8 @@ int main()
     double fps = 25;
     const sf::Time update_ms = sf::seconds(1.f / fps);
 
-    frame_streamer fs("test.m3u8", frame_streamer::stream_mode::HLS);
+    //frame_streamer fs("test.m3u8", frame_streamer::stream_mode::HLS);
+    frame_streamer fs("test.m3u8", 10000, 30, 800, 600, frame_streamer::stream_mode::HLS);
     //frame_streamer fs("rtmp://127.0.0.1/flvplayback/video", frame_streamer::stream_mode::RTMP);
     //frame_streamer fs("test.mp4");
 

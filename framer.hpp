@@ -46,7 +46,15 @@ extern "C" {
   #include <libavutil/channel_layout.h>
   #include <libavutil/opt.h>
   #include <libavutil/mathematics.h>
-  #include <libavutil/timestamp.h>
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wreserved-user-defined-literal"
+//#pragma GCC diagnostic push
+//#pragma GCC diagnostic ignored "-Wliteral-suffix"
+#include <libavutil/timestamp.h>
+//#pragma GCC diagnostic pop
+#pragma clang diagnostic pop
+
   #include <libavformat/avformat.h>
   #include <libswscale/swscale.h>
   #include <libswresample/swresample.h>
@@ -83,6 +91,7 @@ static const std::string av_ts_make_string(int64_t ts)
     else                      snprintf(buf, AV_TS_MAX_STRING_SIZE, "%" PRId64, ts);
     return (std::string)buf;
 }
+#undef av_ts2str
 #define av_ts2str(ts) av_ts_make_string(ts).c_str()
 
 
@@ -93,6 +102,7 @@ static const std::string av_ts_make_time_string(int64_t ts, AVRational *tb)
     else                      snprintf(buf, AV_TS_MAX_STRING_SIZE, "%.6g", av_q2d(*tb) * ts);
     return buf;
 }
+#undef av_ts2timestr
 #define av_ts2timestr(ts, tb) av_ts_make_time_string(ts, tb).c_str()
 #endif // __cplusplus
 
@@ -102,8 +112,8 @@ static bool do_audio = false;
 class frame_streamer
 {
 private:
-    int STREAM_DURATION   = 10 /* seconds */;
-    int STREAM_FRAME_RATE = 25 /* 25 images/s */;
+    // int STREAM_DURATION   = 10 /* seconds */;
+    // int STREAM_FRAME_RATE = 25 /* 25 images/s */;
     AVPixelFormat STREAM_PIX_FMT    = AV_PIX_FMT_YUV420P /* default pix_fmt */;
 
     // a wrapper around a single output AVStream
@@ -153,9 +163,13 @@ public:
 
 
     frame_streamer(std::string filename, size_t bitrate, int fps, int width, int height, stream_mode mode = stream_mode::FILE)
-        : bitrate_(bitrate), fps_(fps), width_(width), height_(height), mode_(mode),
-        filename_(std::move(filename)),
-        current_time_(std::chrono::high_resolution_clock::now())
+        : mode_(mode),
+          filename_(std::move(filename)),
+          bitrate_(bitrate),
+          fps_(fps),
+          width_(width),
+          height_(height),
+          current_time_(std::chrono::high_resolution_clock::now())
     {
     }
 
@@ -277,7 +291,7 @@ public:
             test = false;
             // re-init
             auto &ost = audio_st;
-            auto &c = ost.enc;
+            // UNUSED: auto &c = ost.enc;
             ost.t     = 1;
         }
         }
@@ -318,8 +332,8 @@ public:
 
         pixels.reserve(width_ * height_);
         // TODO: don't loop over pixels just make sure the formats are the same
-        for (unsigned int y = 0; y < height_; y++) {
-            for (unsigned int x = 0; x < width_; x++) {
+        for (unsigned int y = 0; y < (unsigned int)height_; y++) {
+            for (unsigned int x = 0; x < (unsigned int)width_; x++) {
                 pixels[index++] = *((uint32_t *)rawpixels);
                 rawpixels += sizeof(uint32_t) / sizeof(unsigned char);
             }
@@ -432,7 +446,7 @@ private:
                     }
                 }
                 c->channels        = av_get_channel_layout_nb_channels(c->channel_layout);
-                ost->st->time_base = (AVRational){ 1, 1000 };
+                ost->st->time_base = AVRational{ 1, 1000 };
                 break;
 
             case AVMEDIA_TYPE_VIDEO:
@@ -446,7 +460,7 @@ private:
                  * of which frame timestamps are represented. For fixed-fps content,
                  * timebase should be 1/framerate and timestamp increments should be
                  * identical to 1. */
-                ost->st->time_base = (AVRational){ 1, 1000 } ;//STREAM_FRAME_RATE };
+                ost->st->time_base = AVRational{ 1, 1000 } ;//STREAM_FRAME_RATE };
                 //ost->st->time_base = (AVRational){ 1, STREAM_FRAME_RATE };
                 c->time_base       = ost->st->time_base;
 
@@ -645,13 +659,20 @@ private:
             std::chrono::duration<double, std::milli> idle = noww - current_time_;
             end_time_ = static_cast<int64_t>(idle.count() * (mode_ == stream_mode::HLS ? 1.0 : 1.0));
             frame->pts = end_time_;// av_rescale_q(ost->samples_count, (AVRational){1, c->sample_rate}, c->time_base);
-            frame->pts = av_rescale_q(ost->samples_count, (AVRational){1, c->sample_rate}, c->time_base);
+            frame->pts = av_rescale_q(ost->samples_count, AVRational{1, c->sample_rate}, c->time_base);
             //frame->pts = av_rescale_q(frame->pts, (AVRational){1, c->sample_rate}, c->time_base);
             //frame->pts = av_rescale_q(ost->samples_count, (AVRational){1, c->sample_rate}, c->time_base);
             ost->samples_count += dst_nb_samples;
         }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
         ret = avcodec_encode_audio2(c, &pkt, frame, &got_packet);
+#pragma GCC diagnostic pop
+#pragma clang diagnostic pop
+
         if (ret < 0) {
             fprintf(stderr, "Error encoding audio frame: %s\n", av_err2str(ret));
             exit(1);
@@ -759,7 +780,7 @@ private:
                 uint8_t R = (pixel & 0x000000FF) >>  0;
                 uint8_t G = (pixel & 0x0000FF00) >>  8;
                 uint8_t B = (pixel & 0x00FF0000) >> 16;
-                uint8_t A = (pixel & 0xFF000000) >> 24;
+                // UNUSED: uint8_t A = (pixel & 0xFF000000) >> 24;
 
                 // convert RGBA -> CMYK
                 uint8_t Y  = static_cast<uint8_t>((0.257 * R) + (0.504 * G) + (0.098 * B) + 16);
@@ -863,7 +884,13 @@ private:
         av_init_packet(&pkt);
 
         /* encode the image */
-        ret = avcodec_encode_video2(c, &pkt, frame, &got_packet);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    ret = avcodec_encode_video2(c, &pkt, frame, &got_packet);
+#pragma GCC diagnostic pop
+#pragma clang diagnostic pop
         if (ret < 0) {
             fprintf(stderr, "Error encoding video frame: %s\n", av_err2str(ret));
             exit(1);
