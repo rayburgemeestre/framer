@@ -451,9 +451,35 @@ private:
 
             case AVMEDIA_TYPE_VIDEO:
                 c->codec_id = codec_id;
-
                 c->bit_rate = bitrate_;
-                /* Resolution must be a multiple of two. */
+
+                // cranking up resolution can bump the profile level to:
+                // [libx264 @ 0x7fee50035ae0] profile High, level 6.1
+                // results in browser: creating sourceBuffer(video/mp4;codecs=avc1.64003d)
+                // and fails with:
+                // [error] > error while trying to add sourceBuffer:MediaSource.addSourceBuffer: Can't play type
+                // see this URL for details: https://privacycheck.sec.lrz.de/active/fp_cpt/fp_can_play_type.html#video/mp4;%20codecs=%22avc1.64003d%22
+
+                // anyway, this seems to still work in the browser:
+                // [libx264 @ 0x7fe13422e1c0] profile High, level 5.2
+                // so let's force this profile level for now
+                // results in: creating sourceBuffer(video/mp4;codecs=avc1.640034)
+                // and doesn't result in an error in the browser
+                // av_opt_set(oc->priv_data, "profile", "high", 0);
+                // av_opt_set(oc->priv_data, "profile", "baseline", AV_OPT_SEARCH_CHILDREN);
+
+                // more info about profiles and levels here:
+                //  https://sonnati.wordpress.com/2008/10/25/a-primer-to-h-264-levels-and-profiles/
+                c->profile = FF_PROFILE_H264_BASELINE;
+                c->profile = FF_PROFILE_H264_MAIN;
+                c->profile = FF_PROFILE_H264_HIGH;
+                // c->profile = FF_PROFILE_H264_HIGH_444_PREDICTIVE;
+
+                // laptop supports streaming up to profile level 5.2. in the browser
+                // we should make this and the profile configurable.
+                c->level = 52;
+
+               /* Resolution must be a multiple of two. */
                 c->width    = width_;
                 c->height   = height_;
                 /* timebase: This is the fundamental unit of time (in seconds) in terms
