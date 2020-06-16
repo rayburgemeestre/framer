@@ -238,7 +238,7 @@ public:
         if (do_audio) {
         if (have_audio) {
             std::cout << "have audio" << std::endl;
-            open_audio(oc, audio_codec, &audio_st, opt);
+           //  open_audio(oc, audio_codec, &audio_st, opt);
         }
         }
 
@@ -306,8 +306,8 @@ public:
                 //std::cout << "WROTE V: " << video_st.frame->pts << std::endl;;
             } else {
                 if (do_audio) {
-                encode_audio = !write_audio_frame(oc, &audio_st);
-                std::cout << "WROTE A: " << audio_st.frame->pts << std::endl;
+                // encode_audio = !write_audio_frame(oc, &audio_st);
+                // std::cout << "WROTE A: " << audio_st.frame->pts << std::endl;
                 }
             }
         }
@@ -803,10 +803,17 @@ private:
                 // uint8_t R = (pixel & 0xFF000000) >> 24;
 
                 // SFML uses this
+                /*
                 uint8_t R = (pixel & 0x000000FF) >>  0;
                 uint8_t G = (pixel & 0x0000FF00) >>  8;
                 uint8_t B = (pixel & 0x00FF0000) >> 16;
+                */
                 // UNUSED: uint8_t A = (pixel & 0xFF000000) >> 24;
+
+                // ALLEGRO5 uses this
+                uint8_t R = (pixel & 0x00FF0000) >> 16;
+                uint8_t G = (pixel & 0x0000FF00) >>  8;
+                uint8_t B = (pixel & 0x000000FF) >>  0;
 
                 // convert RGBA -> CMYK
                 uint8_t Y  = static_cast<uint8_t>((0.257 * R) + (0.504 * G) + (0.098 * B) + 16);
