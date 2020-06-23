@@ -486,8 +486,8 @@ private:
                  * of which frame timestamps are represented. For fixed-fps content,
                  * timebase should be 1/framerate and timestamp increments should be
                  * identical to 1. */
-                ost->st->time_base = AVRational{ 1, 1000 } ;//STREAM_FRAME_RATE };
-                //ost->st->time_base = (AVRational){ 1, STREAM_FRAME_RATE };
+                // ost->st->time_base = AVRational{ 1, 1000 } ;//STREAM_FRAME_RATE };
+                ost->st->time_base = (AVRational){ 1, (int)fps_ };
                 c->time_base       = ost->st->time_base;
 
                 c->gop_size      = 12; /* emit one intra frame every twelve frames at most */
