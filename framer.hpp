@@ -144,6 +144,7 @@ public:
   enum class stream_mode { FILE, RTMP, HLS };
 
   // todo private:
+  bool initialized_;
   stream_mode mode_;
   std::string filename_;
   size_t bitrate_;
@@ -153,15 +154,34 @@ public:
   std::chrono::high_resolution_clock::time_point current_time_;
   bool test = true;
 
+  frame_streamer(std::string filename, stream_mode mode = stream_mode::FILE)
+      : initialized_(false),
+        mode_(mode),
+        filename_(std::move(filename)),
+        bitrate_(0),
+        fps_(0),
+        width_(0),
+        height_(0),
+        current_time_(std::chrono::high_resolution_clock::now()) {}
+
   frame_streamer(
       std::string filename, size_t bitrate, int fps, int width, int height, stream_mode mode = stream_mode::FILE)
-      : mode_(mode),
+      : initialized_(true),
+        mode_(mode),
         filename_(std::move(filename)),
         bitrate_(bitrate),
         fps_(fps),
         width_(width),
         height_(height),
         current_time_(std::chrono::high_resolution_clock::now()) {}
+
+  void initialize(size_t bitrate, int width, int height, int fps) {
+    bitrate_ = bitrate;
+    width_ = width;
+    height_ = height;
+    fps_ = fps;
+    initialized_ = true;
+  }
 
   bool is_streaming() { return mode_ != stream_mode::FILE; }
 
