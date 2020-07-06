@@ -181,6 +181,7 @@ public:
     height_ = height;
     fps_ = fps;
     initialized_ = true;
+    run();
   }
 
   bool is_streaming() { return mode_ != stream_mode::FILE; }
