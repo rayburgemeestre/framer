@@ -2,7 +2,10 @@ cmake_minimum_required(VERSION 3.0.0)
 
 project(frame_example VERSION 0.1 LANGUAGES CXX)
 
+set(CLANGFORMAT_EXECUTABLE clang-format-10)
 set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+
+include(ClangFormat)
 
 # Required on Ubuntu 18.04
 set(PKG_CONFIG_EXECUTABLE "/usr/bin/pkg-config")
@@ -14,12 +17,11 @@ message(STATUS ${SFML_LIBRARIES})
 
 if (NOT DEBUG)
     set (COMPILE_FLAGS "-O3 -Wall -funsigned-char -std=c++17 -fno-omit-frame-pointer -pedantic -mssse3 -Wl,--strip-all -flto -stdlib=libstdc++")
-    #set (COMPILE_FLAGS "-O3 -funsigned-char -std=c++17 -fno-omit-frame-pointer -mssse3 -Wl,--strip-all -flto")
 else()
     set (COMPILE_FLAGS "-O0 -g -fno-inline -Wall  -funsigned-char -std=c++17 -fno-omit-frame-pointer -pedantic -mssse3 ")
 endif()
 
-include_directories(${PROJECT_SOURCE_DIR}/libs/include/)
+# include_directories(${PROJECT_SOURCE_DIR}/libs/include/)
 include_directories(/opt/cppse/build/ffmpeg/include/)
 
 add_definitions(${COMPILE_FLAGS})
@@ -55,3 +57,5 @@ target_link_libraries(example ${LIBBZ2})
 target_link_libraries(example ${LIBX11})
 target_link_libraries(example ${LIBXCB})
 target_link_libraries(example ${CMAKE_THREAD_LIBS_INIT})
+
+clangformat_setup(${SOURCES} "framer.hpp")
