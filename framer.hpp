@@ -325,26 +325,6 @@ public:
     //        }
   }
 
-  void add_frame(const unsigned char *rawpixels) {
-    // GET RID OF THIS STATIC, ITS JUST FOR TESTING NOW
-    static std::vector<uint32_t> pixels;
-    size_t index = 0;
-
-    // temp test blah
-    auto width_ = 400;
-    auto height_ = 300;
-
-    pixels.reserve(width_ * height_);
-    // TODO: don't loop over pixels just make sure the formats are the same
-    for (unsigned int y = 0; y < (unsigned int)height_; y++) {
-      for (unsigned int x = 0; x < (unsigned int)width_; x++) {
-        pixels[index++] = *((uint32_t *)rawpixels);
-        rawpixels += sizeof(uint32_t) / sizeof(unsigned char);
-      }
-    }
-    add_frame(pixels);
-  }
-
   void finalize() {
     /* Write the trailer, if any. The trailer must be written before you
      * close the CodecContexts open when you wrote the header; otherwise
