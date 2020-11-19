@@ -144,10 +144,12 @@ private:
 
 public:
   enum class stream_mode { FILE, RTMP, HLS };
+  enum class color_mode { BGRA, RGBA };
 
   // todo private:
   bool initialized_;
   stream_mode mode_;
+  color_mode cmode_;
   std::string filename_;
   size_t bitrate_;
   size_t fps_;
@@ -156,9 +158,10 @@ public:
   std::chrono::high_resolution_clock::time_point current_time_;
   bool test = true;
 
-  frame_streamer(std::string filename, stream_mode mode = stream_mode::FILE)
+  frame_streamer(std::string filename, stream_mode mode = stream_mode::FILE, color_mode cmode = color_mode::RGBA)
       : initialized_(false),
         mode_(mode),
+        cmode_(cmode),
         filename_(std::move(filename)),
         bitrate_(0),
         fps_(0),
@@ -166,10 +169,16 @@ public:
         height_(0),
         current_time_(std::chrono::high_resolution_clock::now()) {}
 
-  frame_streamer(
-      std::string filename, size_t bitrate, int fps, int width, int height, stream_mode mode = stream_mode::FILE)
+  frame_streamer(std::string filename,
+                 size_t bitrate,
+                 int fps,
+                 int width,
+                 int height,
+                 stream_mode mode = stream_mode::FILE,
+                 color_mode cmode = color_mode::RGBA)
       : initialized_(true),
         mode_(mode),
+        cmode_(cmode),
         filename_(std::move(filename)),
         bitrate_(bitrate),
         fps_(fps),
@@ -745,7 +754,7 @@ private:
   }
 
   /* Prepare a dummy image. */
-  void fill_yuv_image(AVFrame *pict, int frame_index, int width, int height) {
+  void fill_yuv_image(color_mode cmode, AVFrame *pict, int frame_index, int width, int height) {
     int ret = av_frame_make_writable(pict);
     if (ret < 0) exit(1);
 
@@ -753,24 +762,24 @@ private:
     for (int y = 0; y < height; y++) {
       for (int x = 0; x < width; x++) {
         uint32_t &pixel((*pixels_)[index++]);
-        // uint8_t A = (pixel & 0x000000FF) >>  0;
-        // uint8_t B = (pixel & 0x0000FF00) >>  8;
-        // uint8_t G = (pixel & 0x00FF0000) >> 16;
-        // uint8_t R = (pixel & 0xFF000000) >> 24;
 
-        // SFML uses this
-        /*
-        uint8_t R = (pixel & 0x000000FF) >>  0;
-        uint8_t G = (pixel & 0x0000FF00) >>  8;
-        uint8_t B = (pixel & 0x00FF0000) >> 16;
-        */
-        // UNUSED: uint8_t A = (pixel & 0xFF000000) >> 24;
-
-        // ALLEGRO5 uses this
-        uint8_t R = (pixel & 0x00FF0000) >> 16;
-        uint8_t G = (pixel & 0x0000FF00) >> 8;
-        uint8_t B = (pixel & 0x000000FF) >> 0;
-
+        uint8_t R, G, B;
+        switch (cmode) {
+          case color_mode::RGBA:
+            // used by SFML
+            R = (pixel & 0x000000FF) >> 0;
+            G = (pixel & 0x0000FF00) >> 8;
+            B = (pixel & 0x00FF0000) >> 16;
+            // A = (pixel & 0xFF000000) >> 24;
+            break;
+          case color_mode::BGRA:
+            // Used by Allegro 5
+            B = (pixel & 0x000000FF) >> 0;
+            G = (pixel & 0x0000FF00) >> 8;
+            R = (pixel & 0x00FF0000) >> 16;
+            // A = (pixel & 0xFF000000) >> 24;
+            break;
+        }
         // convert RGBA -> CMYK
         uint8_t Y = static_cast<uint8_t>((0.257 * R) + (0.504 * G) + (0.098 * B) + 16);
         uint8_t Cb = static_cast<uint8_t>((-0.148 * R) - (0.291 * G) + (0.439 * B) + 128);
@@ -839,7 +848,7 @@ private:
           exit(1);
         }
       }
-      fill_yuv_image(ost->tmp_frame, static_cast<int>(ost->next_pts), c->width, c->height);
+      fill_yuv_image(cmode_, ost->tmp_frame, static_cast<int>(ost->next_pts), c->width, c->height);
       sws_scale(ost->sws_ctx,
                 (const uint8_t *const *)ost->tmp_frame->data,
                 ost->tmp_frame->linesize,
@@ -848,7 +857,7 @@ private:
                 ost->frame->data,
                 ost->frame->linesize);
     } else {
-      fill_yuv_image(ost->frame, static_cast<int>(ost->next_pts), c->width, c->height);
+      fill_yuv_image(cmode_, ost->frame, static_cast<int>(ost->next_pts), c->width, c->height);
     }
 
     auto noww = std::chrono::high_resolution_clock::now();
