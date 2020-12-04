@@ -266,7 +266,7 @@ public:
       ret = avio_open(&oc->pb, filename_.c_str(), AVIO_FLAG_WRITE);
       if (ret < 0) {
         fprintf(stderr, "Could not open '%s': %s\n", filename_.c_str(), av_err2str(ret));
-        return 1;
+        throw std::runtime_error("Continuing will fail in mux.c, because avformat_write_header is not optional.");
       }
     }
 
