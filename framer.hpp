@@ -109,6 +109,11 @@ static const std::string av_ts_make_time_string(int64_t ts, AVRational *tb) {
 
 static bool do_audio = false;
 
+class frame_streamer;
+static frame_streamer *global_this = nullptr;
+
+static void av_log_callback(void *ptr, int level, const char *fmt, va_list vl);
+
 class frame_streamer {
 private:
   // int STREAM_DURATION   = 10 /* seconds */;
@@ -157,6 +162,9 @@ public:
   size_t height_;
   std::chrono::high_resolution_clock::time_point current_time_;
   bool test = true;
+  std::function<void(int level, const std::string &line)> log_callback = nullptr;
+  int log_callback_level = 0;
+  std::string log_callback_buffer;
 
   frame_streamer(std::string filename, stream_mode mode = stream_mode::FILE, color_mode cmode = color_mode::RGBA)
       : initialized_(false),
@@ -168,6 +176,10 @@ public:
         width_(0),
         height_(0),
         current_time_(std::chrono::high_resolution_clock::now()) {}
+
+  void set_log_callback(std::function<void(int level, const std::string &line)> log_callback) {
+    this->log_callback = log_callback;
+  }
 
   frame_streamer(std::string filename,
                  size_t bitrate,
@@ -246,6 +258,11 @@ public:
         have_audio = 1;
         encode_audio = 1;
       }
+    }
+
+    if (log_callback != nullptr) {
+      global_this = this;
+      av_log_set_callback(av_log_callback);
     }
 
     /* Now that all the parameters are set, we can open the audio and
@@ -925,3 +942,17 @@ private:
   /**************************************************************/
   /* media file output */
 };
+
+static void av_log_callback(void *ptr, int level, const char *fmt, va_list vl) {
+  if (!global_this) return;
+
+  char buf[512] = {0x00};
+  vsnprintf(buf, 512, fmt, vl);
+  buf[512 - 1] = 0x00;
+  global_this->log_callback_level = level;
+  global_this->log_callback_buffer.append(buf);
+  if (global_this->log_callback_buffer[global_this->log_callback_buffer.size() - 1] == '\n') {
+    global_this->log_callback(global_this->log_callback_level, global_this->log_callback_buffer);
+    global_this->log_callback_buffer = "";
+  }
+}
