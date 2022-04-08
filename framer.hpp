@@ -44,18 +44,31 @@
 
 extern "C" {
 #define __STDC_CONSTANT_MACROS
+#ifndef __clang__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
+#endif
 #include <libavutil/avassert.h>
+#ifndef __clang__
+#pragma GCC diagnostic pop
+#endif
 #include <libavutil/channel_layout.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
 
+#ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wreserved-user-defined-literal"
-//#pragma GCC diagnostic push
-//#pragma GCC diagnostic ignored "-Wliteral-suffix"
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wliteral-suffix"
+#endif
 #include <libavutil/timestamp.h>
-//#pragma GCC diagnostic pop
+#ifdef __clang__
 #pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
 
 #include <libavformat/avformat.h>
 #include <libswresample/swresample.h>
@@ -680,13 +693,19 @@ private:
       ost->samples_count += dst_nb_samples;
     }
 
+#ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#else
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     ret = avcodec_encode_audio2(c, &pkt, frame, &got_packet);
-#pragma GCC diagnostic pop
+#ifdef __clang__
 #pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
 
     if (ret < 0) {
       fprintf(stderr, "Error encoding audio frame: %s\n", av_err2str(ret));
@@ -905,13 +924,19 @@ private:
     av_init_packet(&pkt);
 
     /* encode the image */
+#ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#else
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     ret = avcodec_encode_video2(c, &pkt, frame, &got_packet);
-#pragma GCC diagnostic pop
+#ifdef __clang__
 #pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
     if (ret < 0) {
       fprintf(stderr, "Error encoding video frame: %s\n", av_err2str(ret));
       exit(1);
