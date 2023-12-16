@@ -365,6 +365,8 @@ public:
   }
 
   void finalize() {
+    if (!initialized_) return;
+
     /* Write the trailer, if any. The trailer must be written before you
      * close the CodecContexts open when you wrote the header; otherwise
      * av_write_trailer() may try to use memory that was freed on
@@ -381,6 +383,7 @@ public:
     /* free the stream */
     // Why does this shit crash??
     // avformat_free_context(oc);
+    initialized_ = false;
   }
 
 private:
