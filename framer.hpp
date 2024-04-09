@@ -178,6 +178,7 @@ public:
   std::function<void(int level, const std::string &line)> log_callback = nullptr;
   int log_callback_level = 0;
   std::string log_callback_buffer;
+  int num_threads_ = -1; // sentinel value for do not override default
 
   frame_streamer(std::string filename, stream_mode mode = stream_mode::FILE, color_mode cmode = color_mode::RGBA)
       : initialized_(false),
@@ -192,6 +193,10 @@ public:
 
   void set_log_callback(std::function<void(int level, const std::string &line)> log_callback) {
     this->log_callback = log_callback;
+  }
+
+  void set_num_threads(int num_threads) {
+    num_threads_ = num_threads;
   }
 
   frame_streamer(std::string filename,
@@ -460,6 +465,9 @@ private:
         }
         c->channels = av_get_channel_layout_nb_channels(c->channel_layout);
         ost->st->time_base = AVRational{1, 1000};
+        if (num_threads_ != -1) {
+          c->thread_count = num_threads_;
+        }
         break;
 
       case AVMEDIA_TYPE_VIDEO:
@@ -492,6 +500,10 @@ private:
         // laptop supports streaming up to profile level 5.2. in the browser
         // we should make this and the profile configurable.
         c->level = 52;
+
+        if (num_threads_ != -1) {
+          c->thread_count = num_threads_;
+        }
 
         /* Resolution must be a multiple of two. */
         c->width = width_;
