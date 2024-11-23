@@ -362,19 +362,18 @@ public:
     }
   }
 
-  // void add_frame(const unsigned char *rawpixels) {
-  //   // TODO: re-add for SFLM support
-  //   static std::vector<uint32_t> pixels;
-  //   size_t index = 0;
-  //   pixels.reserve(width_ * height_);
-  //   for (unsigned int y = 0; y < (unsigned int)height_; y++) {
-  //     for (unsigned int x = 0; x < (unsigned int)width_; x++) {
-  //       pixels[index++] = *((uint32_t *)rawpixels);
-  //       rawpixels += sizeof(uint32_t) / sizeof(unsigned char);
-  //     }
-  //   }
-  //   add_frame(pixels);
-  // }
+  void add_frame(const uint8_t *rawpixels, int width, int height) {
+    std::vector<uint32_t> pixels;
+    size_t index = 0;
+    pixels.reserve(width * height);
+    for (unsigned int y = 0; y < (unsigned int)height; y++) {
+      for (unsigned int x = 0; x < (unsigned int)width; x++) {
+        pixels[index++] = *((uint32_t *)rawpixels);
+        rawpixels += sizeof(uint32_t) / sizeof(unsigned char);
+      }
+    }
+    add_frame(pixels);
+  }
 
   void run_loop() {
     if (!_is_video_callback_enabled()) {
@@ -433,8 +432,12 @@ public:
     if (have_video) close_stream(oc, &video_st);
     if (have_audio) close_stream(oc, &audio_st);
 
-    if (!(fmt->flags & AVFMT_NOFILE)) /* Close the output file. */
+    if (!(fmt->flags & AVFMT_NOFILE)) {
+      // This ensures all buffers are flushed to disk
+      avio_flush(oc->pb);
+      /* Close the output file. */
       avio_closep(&oc->pb);
+    }
 
     /* free the stream */
     // Why does this shit crash??
@@ -1092,11 +1095,12 @@ private:
   }
 
   void close_stream(AVFormatContext *oc, OutputStream *ost) {
+    av_channel_layout_uninit(&ost->frame->ch_layout);
     avcodec_free_context(&ost->enc);
     av_frame_free(&ost->frame);
     av_frame_free(&ost->tmp_frame);
     sws_freeContext(ost->sws_ctx);
-    // swr_free(&ost->swr_ctx);
+    swr_free(&ost->swr_ctx);
   }
 
   /**************************************************************/
