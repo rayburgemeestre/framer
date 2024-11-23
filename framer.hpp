@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <functional>
 #include <iostream>
 
 /**
@@ -120,8 +121,6 @@ static const std::string av_ts_make_time_string(int64_t ts, AVRational *tb) {
 #define av_ts2timestr(ts, tb) av_ts_make_time_string(ts, tb).c_str()
 #endif  // __cplusplus
 
-static bool do_audio = false;
-
 class frame_streamer;
 static frame_streamer *global_this = nullptr;
 
@@ -174,11 +173,18 @@ public:
   size_t width_;
   size_t height_;
   std::chrono::high_resolution_clock::time_point current_time_;
+  std::chrono::steady_clock::time_point start_time_;
   bool test = true;
   std::function<void(int level, const std::string &line)> log_callback = nullptr;
   int log_callback_level = 0;
   std::string log_callback_buffer;
-  int num_threads_ = -1; // sentinel value for do not override default
+  int num_threads_ = -1;  // sentinel value for do not override default
+  std::function<void(float seconds, int fps, int num_channels, int16_t *channels)> audio_callback_ = nullptr;
+  std::function<void(std::vector<unsigned int> &pixels, int width, int height)> video_callback_ = nullptr;
+  int64_t audio_pts = 0;
+  int64_t video_pts = 0;
+  bool registered_ = false;
+  bool running_ = true;
 
   frame_streamer(std::string filename, stream_mode mode = stream_mode::FILE, color_mode cmode = color_mode::RGBA)
       : initialized_(false),
@@ -189,15 +195,29 @@ public:
         fps_(0),
         width_(0),
         height_(0),
-        current_time_(std::chrono::high_resolution_clock::now()) {}
+        current_time_(std::chrono::high_resolution_clock::now()),
+        start_time_(std::chrono::steady_clock::now()) {}
 
   void set_log_callback(std::function<void(int level, const std::string &line)> log_callback) {
     this->log_callback = log_callback;
   }
 
-  void set_num_threads(int num_threads) {
-    num_threads_ = num_threads;
+  void set_audio_callback(
+      std::function<void(float seconds, int fps, int num_channels, int16_t *channels)> audio_callback) {
+    this->audio_callback_ = audio_callback;
+    run();
   }
+
+  void set_video_callback(
+      std::function<void(std::vector<unsigned int> &pixels, int width, int height)> video_callback) {
+    this->video_callback_ = video_callback;
+    run();
+  }
+
+  bool _is_audio_enabled() { return audio_callback_ != nullptr; }
+  bool _is_video_callback_enabled() { return video_callback_ != nullptr; }
+
+  void set_num_threads(int num_threads) { num_threads_ = num_threads; }
 
   frame_streamer(std::string filename,
                  size_t bitrate,
@@ -214,13 +234,16 @@ public:
         fps_(fps),
         width_(width),
         height_(height),
-        current_time_(std::chrono::high_resolution_clock::now()) {}
+        current_time_(std::chrono::high_resolution_clock::now()),
+        start_time_(std::chrono::steady_clock::now()) {}
 
   void initialize(size_t bitrate, int width, int height, int fps) {
     bitrate_ = bitrate;
     width_ = width;
     height_ = height;
     fps_ = fps;
+    audio_pts = 0;
+    video_pts = 0;
     initialized_ = true;
     run();
   }
@@ -228,6 +251,9 @@ public:
   bool is_streaming() { return mode_ != stream_mode::FILE; }
 
   int run() {
+    if (registered_) {
+      return 0;
+    }
     /* Initialize libavcodec, and register all codecs and formats. */
     av_register_all();
 
@@ -270,7 +296,7 @@ public:
       have_video = 1;
       encode_video = 1;
     }
-    if (do_audio) {
+    if (_is_audio_enabled()) {
       if (fmt->audio_codec != AV_CODEC_ID_NONE) {
         add_stream(&audio_st, oc, &audio_codec, fmt->audio_codec);
         have_audio = 1;
@@ -287,10 +313,9 @@ public:
      * video codecs and allocate the necessary encode buffers. */
     if (have_video) open_video(oc, video_codec, &video_st, opt);
 
-    if (do_audio) {
+    if (_is_audio_enabled()) {
       if (have_audio) {
-        std::cout << "have audio" << std::endl;
-        //  open_audio(oc, audio_codec, &audio_st, opt);
+        open_audio(oc, audio_codec, &audio_st, opt);
       }
     }
 
@@ -311,63 +336,67 @@ public:
       fprintf(stderr, "Error occurred when opening output file: %s\n", av_err2str(ret));
       return 1;
     }
-
+    registered_ = true;
     return 0;
   }
 
-  //    void add_frame()
-  //    {
-  //        while (encode_video || encode_audio) {
-  //            /* select the stream to encode */
-  //            if (encode_video &&
-  //                (!encode_audio || av_compare_ts(video_st.next_pts, video_st.enc->time_base,
-  //                                                audio_st.next_pts, audio_st.enc->time_base) <= 0)) {
-  //                encode_video = !write_video_frame(oc, &video_st);
-  //            } else {
-  //                encode_audio = !write_audio_frame(oc, &audio_st);
-  //            }
-  //        }
-  //    }
-  // orig
-  std::vector<uint32_t> *pixels_ = nullptr;
-  int64_t end_time_ = 0;
-  void add_frame(std::vector<uint32_t> &pixels) {
-    if (do_audio) {
-      std::cout << " values: " << std::boolalpha << encode_video << " " << encode_audio << std::endl;
-      if (test && encode_audio) {
-        std::cout << "RESET" << std::endl;
-        test = false;
-        // re-init
-        auto &ost = audio_st;
-        // UNUSED: auto &c = ost.enc;
-        ost.t = 1;
-      }
-    }
+  std::vector<uint32_t> *pixels_ = nullptr;  // temporary pointer
 
-    if (encode_video || encode_audio) {
-      /* select the stream to encode */
+  void add_frame(std::vector<uint32_t> &pixels) {
+    run();
+    while (encode_video || encode_audio) {
       if (encode_video &&
           (!encode_audio ||
            av_compare_ts(video_st.next_pts, video_st.enc->time_base, audio_st.next_pts, audio_st.enc->time_base) <=
                0)) {
         pixels_ = &pixels;
         encode_video = !write_video_frame(oc, &video_st);
-        // std::cout << "WROTE V: " << video_st.frame->pts << std::endl;;
-      } else {
-        if (do_audio) {
-          // encode_audio = !write_audio_frame(oc, &audio_st);
-          // std::cout << "WROTE A: " << audio_st.frame->pts << std::endl;
-        }
+        break;
+      } else if (encode_audio) {
+        encode_audio = !write_audio_frame(oc, &audio_st);
       }
     }
-
-    //        if (!streaming_) {
-    //            endTime = av_rescale_q(1, video_st->codec->time_base, video_st->time_base);
-    //            frame->pts += endTime;
-    //        } else {
-    //            frame->pts = endTime;
-    //        }
   }
+
+  //  void add_frame(const unsigned char *rawpixels) {
+  //    // TODO: re-add for SFLM support
+  //    static std::vector<uint32_t> pixels;
+  //    size_t index = 0;
+  //    pixels.reserve(width_ * height_);
+  //    for (unsigned int y = 0; y < (unsigned int)height_; y++) {
+  //      for (unsigned int x = 0; x < (unsigned int)width_; x++) {
+  //        pixels[index++] = *((uint32_t *)rawpixels);
+  //        rawpixels += sizeof(uint32_t) / sizeof(unsigned char);
+  //      }
+  //    }
+  //    add_frame(pixels);
+  //  }
+
+  void run_loop() {
+    if (!_is_video_callback_enabled()) {
+      throw std::runtime_error("video callback not enabled");
+    }
+    run();
+    while (running_) {
+      std::vector<uint32_t> pixels(width_ * height_, 0x00000000);
+      while (encode_video || encode_audio) {
+        if (encode_video &&
+            (!encode_audio ||
+             av_compare_ts(video_st.next_pts, video_st.enc->time_base, audio_st.next_pts, audio_st.enc->time_base) <=
+                 0)) {
+          video_callback_(pixels, width_, height_);
+          pixels_ = &pixels;  // TODO: pass it around?
+          encode_video = !write_video_frame(oc, &video_st);
+          break;
+        } else if (encode_audio) {
+          encode_audio = !write_audio_frame(oc, &audio_st);
+        }
+      }
+      if (!running_) break;
+    }
+  }
+
+  void stop_loop() { running_ = false; }
 
   void finalize() {
     if (!initialized_) return;
@@ -394,9 +423,6 @@ public:
 private:
   void log_packet(const AVFormatContext *fmt_ctx, const AVPacket *pkt) {
     AVRational *time_base = &fmt_ctx->streams[pkt->stream_index]->time_base;
-
-    // std::cout << "time_base = " << time_base->num << " / " << time_base->den << std::endl;
-
     printf("pts:%s pts_time:%s dts:%s dts_time:%s duration:%s duration_time:%s stream_index:%d\n",
            av_ts2str(pkt->pts),
            av_ts2timestr(pkt->pts, time_base),
@@ -413,9 +439,7 @@ private:
     pkt->stream_index = st->index;
 
     /* Write the compressed frame to the media file. */
-    if (do_audio) {
-      log_packet(fmt_ctx, pkt);
-    }
+    // log_packet(fmt_ctx, pkt);
     return av_interleaved_write_frame(fmt_ctx, pkt);
   }
 
@@ -464,7 +488,10 @@ private:
           }
         }
         c->channels = av_get_channel_layout_nb_channels(c->channel_layout);
-        ost->st->time_base = AVRational{1, 1000};
+
+        ost->st->time_base = AVRational{1, audio_st.enc->sample_rate};  // Usually 1/44100
+        c->time_base = ost->st->time_base;
+
         if (num_threads_ != -1) {
           c->thread_count = num_threads_;
         }
@@ -512,8 +539,13 @@ private:
          * of which frame timestamps are represented. For fixed-fps content,
          * timebase should be 1/framerate and timestamp increments should be
          * identical to 1. */
-        ost->st->time_base = AVRational{1, (int)fps_};
-        c->time_base = ost->st->time_base;
+        if (mode_ == stream_mode::HLS) {
+          ost->st->time_base = AVRational{1, 90000};  // Standard 90kHz clock for MPEG/HLS
+          c->time_base = ost->st->time_base;
+        } else {
+          ost->st->time_base = AVRational{1, (int)fps_};
+          c->time_base = ost->st->time_base;
+        }
 
         c->gop_size = 12; /* emit one intra frame every twelve frames at most */
         c->pix_fmt = STREAM_PIX_FMT;
@@ -625,33 +657,40 @@ private:
     }
   }
 
-  /* Prepare a 16 bit dummy audio frame of 'frame_size' samples and
-   * 'nb_channels' channels. */
   AVFrame *get_audio_frame(OutputStream *ost) {
     AVFrame *frame = ost->tmp_frame;
-    int j, i, v;
-    auto *q = (int16_t *)frame->data[0];
+    int16_t *q = (int16_t *)frame->data[0];  // I don't know why but passing this pointer to the callback doesn't work
+    int16_t *tmp = (int16_t *)av_malloc(ost->enc->channels * sizeof(int16_t));
+    memset(tmp, 0, ost->enc->channels * sizeof(int16_t));
 
-    //        /* check if we want to generate more frames */
-    //        if (av_compare_ts(ost->next_pts, ost->enc->time_base,
-    //                          STREAM_DURATION, (AVRational){ 1, 1 }) >= 0)
-    //            return nullptr;
+    for (int j = 0; j < frame->nb_samples; j++) {
+      float t = float(ost->next_pts + j) / ost->enc->sample_rate;
+      float seconds = t;
 
-    for (j = 0; j < frame->nb_samples; j++) {
-      v = (int)(sin(end_time_) * ost->tincr * ost->t);
-      // v = (int)(sin(end_time_));
-      for (i = 0; i < ost->enc->channels; i++) *q++ = static_cast<int16_t>(v);
-      ost->t++;
-      // ost->tincr += ost->tincr2;
+      if (audio_callback_) {
+        audio_callback_(seconds, fps_, ost->enc->channels, tmp);
+      }
+
+      for (int i = 0; i < ost->enc->channels; i++) {
+        *q++ = static_cast<int16_t>(tmp[i]);
+      }
+    }
+    if (mode_ == stream_mode::HLS) {
+      auto now = std::chrono::steady_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::microseconds>(now - start_time_);
+      AVCodecContext *c = ost->enc;
+
+      ost->frame->pts = av_rescale_q(duration.count(),
+                                     AVRational{1, 1000000},  // microseconds
+                                     c->time_base);
+      ost->next_pts = ost->frame->pts + frame->nb_samples;  // Add this line
+
+    } else {
+      ost->frame->pts = ost->next_pts;
+      ost->next_pts += frame->nb_samples;
     }
 
-    auto noww = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> idle = noww - current_time_;
-    end_time_ = static_cast<int64_t>(idle.count() * (mode_ == stream_mode::HLS ? 1.0 : 1.0));
-    frame->pts = end_time_;  // ost->next_pts;
-    ost->next_pts += 10;
-    ;
-
+    av_free(tmp);
     return frame;
   }
 
@@ -698,13 +737,10 @@ private:
       }
       frame = ost->frame;
 
-      auto noww = std::chrono::high_resolution_clock::now();
-      std::chrono::duration<double, std::milli> idle = noww - current_time_;
-      end_time_ = static_cast<int64_t>(idle.count() * (mode_ == stream_mode::HLS ? 1.0 : 1.0));
-      frame->pts = end_time_;  // av_rescale_q(ost->samples_count, (AVRational){1, c->sample_rate}, c->time_base);
-      frame->pts = av_rescale_q(ost->samples_count, AVRational{1, c->sample_rate}, c->time_base);
-      // frame->pts = av_rescale_q(frame->pts, (AVRational){1, c->sample_rate}, c->time_base);
-      // frame->pts = av_rescale_q(ost->samples_count, (AVRational){1, c->sample_rate}, c->time_base);
+      ost->frame->pts = audio_pts;
+      audio_pts += frame->nb_samples;
+      audio_st.next_pts = audio_pts;
+
       ost->samples_count += dst_nb_samples;
     }
 
@@ -804,7 +840,6 @@ private:
     }
   }
 
-  /* Prepare a dummy image. */
   void fill_yuv_image(color_mode cmode, AVFrame *pict, int frame_index, int width, int height) {
     int ret = av_frame_make_writable(pict);
     if (ret < 0) exit(1);
@@ -910,14 +945,19 @@ private:
     } else {
       fill_yuv_image(cmode_, ost->frame, static_cast<int>(ost->next_pts), c->width, c->height);
     }
+    if (mode_ == stream_mode::HLS) {
+      auto now = std::chrono::steady_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::microseconds>(now - start_time_);
+      ost->frame->pts = av_rescale_q(duration.count(),
+                                     AVRational{1, 1000000},  // microseconds
+                                     c->time_base);
+      video_st.next_pts = ost->frame->pts + 1;
 
-    auto noww = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> idle = noww - current_time_;
-    end_time_ = static_cast<int64_t>(idle.count() * (mode_ == stream_mode::HLS ? 1.0 : 1.0));
-    // std::cout << "end_time_ = " << end_time_ << std::endl;
-    ost->frame->pts = end_time_;  // ost->next_pts++;
-    ost->next_pts++;
-
+    } else {
+      ost->frame->pts = video_pts;
+      video_pts += av_rescale_q(1, AVRational{1, (int)fps_}, video_st.enc->time_base);
+      video_st.next_pts = video_pts;
+    }
     return ost->frame;
   }
 
