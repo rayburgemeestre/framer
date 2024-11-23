@@ -25,6 +25,7 @@
 
 #include <functional>
 #include <iostream>
+#include <thread>
 
 /**
  * @file
@@ -53,6 +54,7 @@ extern "C" {
 #ifndef __clang__
 #pragma GCC diagnostic pop
 #endif
+#include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
@@ -151,9 +153,9 @@ private:
   } OutputStream;
 
   OutputStream video_st = {nullptr}, audio_st = {nullptr};
-  AVOutputFormat *fmt;
+  const AVOutputFormat *fmt;
   AVFormatContext *oc;
-  AVCodec *audio_codec, *video_codec;
+  const AVCodec *audio_codec, *video_codec;
   int ret;
   int have_video = 0, have_audio = 0;
   int encode_video = 0, encode_audio = 0;
@@ -255,7 +257,9 @@ public:
       return 0;
     }
     /* Initialize libavcodec, and register all codecs and formats. */
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 9, 100)
     av_register_all();
+#endif
 
     // for (int i = 2; i+1 < argc; i+=2) {
     //     if (!strcmp(argv[i], "-flags") || !strcmp(argv[i], "-fflags"))
@@ -358,25 +362,28 @@ public:
     }
   }
 
-  //  void add_frame(const unsigned char *rawpixels) {
-  //    // TODO: re-add for SFLM support
-  //    static std::vector<uint32_t> pixels;
-  //    size_t index = 0;
-  //    pixels.reserve(width_ * height_);
-  //    for (unsigned int y = 0; y < (unsigned int)height_; y++) {
-  //      for (unsigned int x = 0; x < (unsigned int)width_; x++) {
-  //        pixels[index++] = *((uint32_t *)rawpixels);
-  //        rawpixels += sizeof(uint32_t) / sizeof(unsigned char);
-  //      }
-  //    }
-  //    add_frame(pixels);
-  //  }
+  // void add_frame(const unsigned char *rawpixels) {
+  //   // TODO: re-add for SFLM support
+  //   static std::vector<uint32_t> pixels;
+  //   size_t index = 0;
+  //   pixels.reserve(width_ * height_);
+  //   for (unsigned int y = 0; y < (unsigned int)height_; y++) {
+  //     for (unsigned int x = 0; x < (unsigned int)width_; x++) {
+  //       pixels[index++] = *((uint32_t *)rawpixels);
+  //       rawpixels += sizeof(uint32_t) / sizeof(unsigned char);
+  //     }
+  //   }
+  //   add_frame(pixels);
+  // }
 
   void run_loop() {
     if (!_is_video_callback_enabled()) {
       throw std::runtime_error("video callback not enabled");
     }
     run();
+    auto stream_start = std::chrono::steady_clock::now();
+    const double frame_duration = 1.0 / fps_;  // Duration of one frame in seconds
+    int frames = 0;
     while (running_) {
       std::vector<uint32_t> pixels(width_ * height_, 0x00000000);
       while (encode_video || encode_audio) {
@@ -384,9 +391,24 @@ public:
             (!encode_audio ||
              av_compare_ts(video_st.next_pts, video_st.enc->time_base, audio_st.next_pts, audio_st.enc->time_base) <=
                  0)) {
+          double target_time = frames * frame_duration;
+          // Get actual elapsed time
+          auto now = std::chrono::steady_clock::now();
+          double elapsed = std::chrono::duration<double>(now - stream_start).count();
+          if (elapsed > target_time + frame_duration) {
+            // We're running too slow - skip this frame
+            frames++;
+            continue;
+          }
+          if (elapsed < target_time) {
+            // We're running too fast - sleep until target time
+            std::this_thread::sleep_for(std::chrono::duration<double>(target_time - elapsed));
+          }
+
           video_callback_(pixels, width_, height_);
           pixels_ = &pixels;  // TODO: pass it around?
           encode_video = !write_video_frame(oc, &video_st);
+          frames++;
           break;
         } else if (encode_audio) {
           encode_audio = !write_audio_frame(oc, &audio_st);
@@ -444,7 +466,7 @@ private:
   }
 
   /* Add an output stream. */
-  void add_stream(OutputStream *ost, AVFormatContext *oc, AVCodec **codec, enum AVCodecID codec_id) {
+  void add_stream(OutputStream *ost, AVFormatContext *oc, const AVCodec **codec, enum AVCodecID codec_id) {
     AVCodecContext *c;
     int i;
 
@@ -479,15 +501,30 @@ private:
             if ((*codec)->supported_samplerates[i] == 44100) c->sample_rate = 44100;
           }
         }
-        c->channels = av_get_channel_layout_nb_channels(c->channel_layout);
-        c->channel_layout = AV_CH_LAYOUT_STEREO;
-        if ((*codec)->channel_layouts) {
-          c->channel_layout = (*codec)->channel_layouts[0];
-          for (i = 0; (*codec)->channel_layouts[i]; i++) {
-            if ((*codec)->channel_layouts[i] == AV_CH_LAYOUT_STEREO) c->channel_layout = AV_CH_LAYOUT_STEREO;
+        // Initialize default stereo layout
+        av_channel_layout_default(&c->ch_layout, 2);  // 2 for stereo
+
+        // Check codec's supported channel layouts
+        if ((*codec)->ch_layouts) {
+          // Try to find stereo layout in supported layouts
+          for (i = 0; (*codec)->ch_layouts[i].nb_channels; i++) {
+            AVChannelLayout stereo_layout;
+            memset(&stereo_layout, 0, sizeof(AVChannelLayout));
+
+            av_channel_layout_from_mask(&stereo_layout, AV_CH_LAYOUT_STEREO);
+
+            if (av_channel_layout_compare(&(*codec)->ch_layouts[i], &stereo_layout) == 0) {
+              // Found stereo layout, use it
+              av_channel_layout_copy(&c->ch_layout, &stereo_layout);
+              break;
+            }
+
+            // If stereo not found, use first supported layout
+            if (i == 0) {
+              av_channel_layout_copy(&c->ch_layout, &(*codec)->ch_layouts[0]);
+            }
           }
         }
-        c->channels = av_get_channel_layout_nb_channels(c->channel_layout);
 
         ost->st->time_base = AVRational{1, audio_st.enc->sample_rate};  // Usually 1/44100
         c->time_base = ost->st->time_base;
@@ -560,7 +597,6 @@ private:
           c->mb_decision = 2;
         }
         break;
-
       default:
         break;
     }
@@ -572,7 +608,10 @@ private:
   /**************************************************************/
   /* audio output */
 
-  AVFrame *alloc_audio_frame(enum AVSampleFormat sample_fmt, uint64_t channel_layout, int sample_rate, int nb_samples) {
+  AVFrame *alloc_audio_frame(enum AVSampleFormat sample_fmt,
+                             const AVChannelLayout *ch_layout,
+                             int sample_rate,
+                             int nb_samples) {
     AVFrame *frame = av_frame_alloc();
     int ret;
 
@@ -582,7 +621,8 @@ private:
     }
 
     frame->format = sample_fmt;
-    frame->channel_layout = channel_layout;
+    av_channel_layout_copy(&frame->ch_layout, ch_layout);  // Copy from codec context
+
     frame->sample_rate = sample_rate;
     frame->nb_samples = nb_samples;
 
@@ -597,7 +637,7 @@ private:
     return frame;
   }
 
-  void open_audio(AVFormatContext *oc, AVCodec *codec, OutputStream *ost, AVDictionary *opt_arg) {
+  void open_audio(AVFormatContext *oc, const AVCodec *codec, OutputStream *ost, AVDictionary *opt_arg) {
     AVCodecContext *c;
     int nb_samples;
     int ret;
@@ -625,8 +665,12 @@ private:
     else
       nb_samples = c->frame_size;
 
-    ost->frame = alloc_audio_frame(c->sample_fmt, c->channel_layout, c->sample_rate, nb_samples);
-    ost->tmp_frame = alloc_audio_frame(AV_SAMPLE_FMT_S16, c->channel_layout, c->sample_rate, nb_samples);
+    ost->frame = alloc_audio_frame(c->sample_fmt, &c->ch_layout, c->sample_rate, nb_samples);
+
+    AVChannelLayout tmp_layout;
+    av_channel_layout_copy(&tmp_layout, &c->ch_layout);
+
+    ost->tmp_frame = alloc_audio_frame(AV_SAMPLE_FMT_S16, &tmp_layout, c->sample_rate, nb_samples);
 
     /* copy the stream parameters to the muxer */
     ret = avcodec_parameters_from_context(ost->st->codecpar, c);
@@ -643,10 +687,10 @@ private:
     }
 
     /* set options */
-    av_opt_set_int(ost->swr_ctx, "in_channel_count", c->channels, 0);
+    av_opt_set_chlayout(ost->swr_ctx, "in_chlayout", &c->ch_layout, 0);
+    av_opt_set_chlayout(ost->swr_ctx, "out_chlayout", &c->ch_layout, 0);
     av_opt_set_int(ost->swr_ctx, "in_sample_rate", c->sample_rate, 0);
     av_opt_set_sample_fmt(ost->swr_ctx, "in_sample_fmt", AV_SAMPLE_FMT_S16, 0);
-    av_opt_set_int(ost->swr_ctx, "out_channel_count", c->channels, 0);
     av_opt_set_int(ost->swr_ctx, "out_sample_rate", c->sample_rate, 0);
     av_opt_set_sample_fmt(ost->swr_ctx, "out_sample_fmt", c->sample_fmt, 0);
 
@@ -660,18 +704,18 @@ private:
   AVFrame *get_audio_frame(OutputStream *ost) {
     AVFrame *frame = ost->tmp_frame;
     int16_t *q = (int16_t *)frame->data[0];  // I don't know why but passing this pointer to the callback doesn't work
-    int16_t *tmp = (int16_t *)av_malloc(ost->enc->channels * sizeof(int16_t));
-    memset(tmp, 0, ost->enc->channels * sizeof(int16_t));
+    int16_t *tmp = (int16_t *)av_malloc(ost->enc->ch_layout.nb_channels * sizeof(int16_t));
+    memset(tmp, 0, ost->enc->ch_layout.nb_channels * sizeof(int16_t));
 
     for (int j = 0; j < frame->nb_samples; j++) {
       float t = float(ost->next_pts + j) / ost->enc->sample_rate;
       float seconds = t;
 
       if (audio_callback_) {
-        audio_callback_(seconds, fps_, ost->enc->channels, tmp);
+        audio_callback_(seconds, fps_, ost->enc->ch_layout.nb_channels, tmp);
       }
 
-      for (int i = 0; i < ost->enc->channels; i++) {
+      for (int i = 0; i < ost->enc->ch_layout.nb_channels; i++) {
         *q++ = static_cast<int16_t>(tmp[i]);
       }
     }
@@ -751,7 +795,21 @@ private:
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
-    ret = avcodec_encode_audio2(c, &pkt, frame, &got_packet);
+    ret = avcodec_send_frame(c, frame);
+    if (ret < 0) {
+      return ret;
+    }
+
+    ret = avcodec_receive_packet(c, &pkt);
+    if (ret >= 0) {
+      got_packet = 1;
+    } else if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+      got_packet = 0;
+      ret = 0;
+    } else {
+      return ret;
+    }
+
 #ifdef __clang__
 #pragma clang diagnostic pop
 #else
@@ -798,7 +856,7 @@ private:
     return picture;
   }
 
-  void open_video(AVFormatContext *oc, AVCodec *codec, OutputStream *ost, AVDictionary *opt_arg) {
+  void open_video(AVFormatContext *oc, const AVCodec *codec, OutputStream *ost, AVDictionary *opt_arg) {
     int ret;
     AVCodecContext *c = ost->enc;
     AVDictionary *opt = nullptr;
@@ -986,7 +1044,29 @@ private:
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
-    ret = avcodec_encode_video2(c, &pkt, frame, &got_packet);
+    ret = avcodec_send_frame(c, frame);
+    if (ret < 0) {
+      return ret;
+    }
+
+    ret = avcodec_receive_packet(c, &pkt);
+
+    if (ret >= 0) {
+      if (pkt.duration == 0) {
+        if (c->codec_type == AVMEDIA_TYPE_AUDIO) {
+          pkt.duration = frame->nb_samples;
+        } else if (c->codec_type == AVMEDIA_TYPE_VIDEO) {
+          pkt.duration = av_rescale_q(1, c->time_base, ost->enc->time_base);
+        }
+      }
+      got_packet = 1;
+    } else if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+      got_packet = 0;
+      ret = 0;
+    } else {
+      return ret;
+    }
+
 #ifdef __clang__
 #pragma clang diagnostic pop
 #else
