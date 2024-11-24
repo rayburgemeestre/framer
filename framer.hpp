@@ -443,7 +443,13 @@ public:
     }
   }
 
-  void stop_loop() { running_ = false; }
+  void record() {
+    _configure_streams();
+    while (running_) {
+      write_audio_frame(oc, &audio_st);
+    }
+  }
+  void stop() { running_ = false; }
 
   void finalize() {
     if (!initialized_) return;
@@ -489,7 +495,7 @@ private:
     pkt->stream_index = st->index;
 
     /* Write the compressed frame to the media file. */
-    // log_packet(fmt_ctx, pkt);
+    log_packet(fmt_ctx, pkt);
     return av_interleaved_write_frame(fmt_ctx, pkt);
   }
 

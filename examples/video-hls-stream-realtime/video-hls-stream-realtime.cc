@@ -20,7 +20,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <functional>
-#include <thread>
 
 int main() {
   bool is_smoke_test = std::getenv("SMOKE_TEST") != nullptr;
@@ -41,7 +40,7 @@ int main() {
   // Compared to the video-hls-stream.cc example this code can be quite a bit simpler.
   // (No required frame skipping or extra delays on the callers side.)
   auto start = std::chrono::high_resolution_clock::now();
-  fs.set_video_callback([start](std::vector<unsigned int> &pixels, int width, int height) {
+  fs.set_video_callback([&fs, video_seconds, start](std::vector<unsigned int> &pixels, int width, int height) {
     auto now = std::chrono::high_resolution_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
     float seconds = elapsed / 1000.0f;
@@ -52,17 +51,12 @@ int main() {
         pixels[y * width + x] = (val << 24) | (val << 16) | (val << 8) | 0xFF;
       }
     }
-  });
-
-  // Start background thread that invokes fs.stop_loop() after some time
-  std::thread stop_thread([&fs, &video_seconds]() {
-    std::this_thread::sleep_for(std::chrono::seconds(video_seconds));
-    fs.stop_loop();
+    if (seconds >= video_seconds) {
+      fs.stop();
+    }
   });
 
   fs.run_loop();
 
   fs.finalize();
-
-  stop_thread.join();
 }

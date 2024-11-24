@@ -23,15 +23,16 @@ for example in examples/*; do
 	popd
 done
 
-echo final results
+echo Final results:
+
 pushd $test_dir
-ls -alh
+  ls -alh
+
+  md5_observed=$(ls -1 | sort | md5sum -)
+  md5_expected="983feb3f676764439e2663918a957c15  -"
+
+  if [[ $md5_observed != $md5_expected ]]; then
+      echo ERROR: Something in the output changed.
+      exit 1
+  fi
 popd
-
-md5_observed=$(ls -1 | sort | md5sum -)
-md5_expected="5e2368d9d9ab871a88bab96656bca37b  -"
-
-if [[ $md5_observed != $md5_expected ]]; then
-    echo ERROR: Something in the output changed.
-    exit 1
-fi
