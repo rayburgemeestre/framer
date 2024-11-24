@@ -457,8 +457,7 @@ public:
     }
 
     /* free the stream */
-    // Why does this shit crash??
-    // avformat_free_context(oc);
+    avformat_free_context(oc);
     initialized_ = false;
   }
 

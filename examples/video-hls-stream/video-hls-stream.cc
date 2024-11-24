@@ -26,8 +26,9 @@ float smooth_envelope(float t, float attack, float release, float total_duration
 std::vector<unsigned int> cool_gradient_spiral_animation(float time, int width, int height);
 
 int main() {
+  bool is_smoke_test = std::getenv("SMOKE_TEST") != nullptr;
   const int fps = 30;
-  const int video_seconds = 60;
+  const int video_seconds = is_smoke_test ? 5 : 60;
   const int width = 400;
   const int height = 300;
 

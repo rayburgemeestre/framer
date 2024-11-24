@@ -23,8 +23,9 @@
 #include <thread>
 
 int main() {
+  bool is_smoke_test = std::getenv("SMOKE_TEST") != nullptr;
   const int fps = 30;
-  const int video_seconds = 60;
+  const int video_seconds = is_smoke_test ? 5 : 60;
   const int width = 400;
   const int height = 300;
 
