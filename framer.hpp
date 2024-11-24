@@ -228,7 +228,6 @@ public:
         current_time_(std::chrono::high_resolution_clock::now()),
         start_time_(std::chrono::steady_clock::now()) {}
 
-
   /**
    * Constructor that does not yet take all parameters, the idea is to use initialize() later.
    */

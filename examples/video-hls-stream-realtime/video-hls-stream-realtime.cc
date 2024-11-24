@@ -52,7 +52,6 @@ int main() {
         pixels[y * width + x] = (val << 24) | (val << 16) | (val << 8) | 0xFF;
       }
     }
-    // fake delay
   });
 
   // Start background thread that invokes fs.stop_loop() after some time
