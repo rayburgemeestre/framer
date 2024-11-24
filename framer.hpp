@@ -44,6 +44,9 @@
 #include <iostream>
 #include <thread>
 
+// As shown in below comment, this code was based on the muxing.c example from the FFmpeg source code.
+// Then kept up to date with the latest FFmpeg API changes since version +/- 3.0.
+
 /**
  * @file
  * libavformat API example.
@@ -182,7 +185,12 @@ public:
   enum class stream_mode { FILE, RTMP, HLS };
   enum class color_mode { BGRA, RGBA };
 
-  // todo private:
+  // TODO: why does this need to be public
+  std::function<void(int level, const std::string &line)> log_callback = nullptr;
+  int log_callback_level = 0;
+  std::string log_callback_buffer;
+
+private:
   bool initialized_;
   stream_mode mode_;
   color_mode cmode_;
@@ -193,51 +201,15 @@ public:
   size_t height_;
   std::chrono::high_resolution_clock::time_point current_time_;
   std::chrono::steady_clock::time_point start_time_;
-  bool test = true;
-  std::function<void(int level, const std::string &line)> log_callback = nullptr;
-  int log_callback_level = 0;
-  std::string log_callback_buffer;
   int num_threads_ = -1;  // sentinel value for do not override default
   std::function<void(float seconds, int fps, int num_channels, int16_t *channels)> audio_callback_ = nullptr;
   std::function<void(std::vector<unsigned int> &pixels, int width, int height)> video_callback_ = nullptr;
   int64_t audio_pts = 0;
   int64_t video_pts = 0;
-  bool registered_ = false;
+  bool streams_configured_ = false;
   bool running_ = true;
 
-  frame_streamer(std::string filename, stream_mode mode = stream_mode::FILE, color_mode cmode = color_mode::RGBA)
-      : initialized_(false),
-        mode_(mode),
-        cmode_(cmode),
-        filename_(std::move(filename)),
-        bitrate_(0),
-        fps_(0),
-        width_(0),
-        height_(0),
-        current_time_(std::chrono::high_resolution_clock::now()),
-        start_time_(std::chrono::steady_clock::now()) {}
-
-  void set_log_callback(std::function<void(int level, const std::string &line)> log_callback) {
-    this->log_callback = log_callback;
-  }
-
-  void set_audio_callback(
-      std::function<void(float seconds, int fps, int num_channels, int16_t *channels)> audio_callback) {
-    this->audio_callback_ = audio_callback;
-    run();
-  }
-
-  void set_video_callback(
-      std::function<void(std::vector<unsigned int> &pixels, int width, int height)> video_callback) {
-    this->video_callback_ = video_callback;
-    run();
-  }
-
-  bool _is_audio_enabled() { return audio_callback_ != nullptr; }
-  bool _is_video_callback_enabled() { return video_callback_ != nullptr; }
-
-  void set_num_threads(int num_threads) { num_threads_ = num_threads; }
-
+public:
   frame_streamer(std::string filename,
                  size_t bitrate,
                  int fps,
@@ -256,6 +228,22 @@ public:
         current_time_(std::chrono::high_resolution_clock::now()),
         start_time_(std::chrono::steady_clock::now()) {}
 
+
+  /**
+   * Constructor that does not yet take all parameters, the idea is to use initialize() later.
+   */
+  frame_streamer(std::string filename, stream_mode mode = stream_mode::FILE, color_mode cmode = color_mode::RGBA)
+      : initialized_(false),
+        mode_(mode),
+        cmode_(cmode),
+        filename_(std::move(filename)),
+        bitrate_(0),
+        fps_(0),
+        width_(0),
+        height_(0),
+        current_time_(std::chrono::high_resolution_clock::now()),
+        start_time_(std::chrono::steady_clock::now()) {}
+
   void initialize(size_t bitrate, int width, int height, int fps) {
     bitrate_ = bitrate;
     width_ = width;
@@ -264,13 +252,35 @@ public:
     audio_pts = 0;
     video_pts = 0;
     initialized_ = true;
-    run();
+    _configure_streams();
   }
+
+  void set_log_callback(std::function<void(int level, const std::string &line)> log_callback) {
+    this->log_callback = log_callback;
+  }
+
+  void set_audio_callback(
+      std::function<void(float seconds, int fps, int num_channels, int16_t *channels)> audio_callback) {
+    this->audio_callback_ = audio_callback;
+    _configure_streams();
+  }
+
+  void set_video_callback(
+      std::function<void(std::vector<unsigned int> &pixels, int width, int height)> video_callback) {
+    this->video_callback_ = video_callback;
+    _configure_streams();
+  }
+
+  bool _is_audio_enabled() { return audio_callback_ != nullptr; }
+  bool _is_video_callback_enabled() { return video_callback_ != nullptr; }
+
+  void set_num_threads(int num_threads) { num_threads_ = num_threads; }
 
   bool is_streaming() { return mode_ != stream_mode::FILE; }
 
-  int run() {
-    if (registered_) {
+private:
+  int _configure_streams() {
+    if (streams_configured_) {
       return 0;
     }
     /* Initialize libavcodec, and register all codecs and formats. */
@@ -357,14 +367,15 @@ public:
       fprintf(stderr, "Error occurred when opening output file: %s\n", av_err2str(ret));
       return 1;
     }
-    registered_ = true;
+    streams_configured_ = true;
     return 0;
   }
 
   std::vector<uint32_t> *pixels_ = nullptr;  // temporary pointer
 
+public:
   void add_frame(std::vector<uint32_t> &pixels) {
-    run();
+    _configure_streams();
     while (encode_video || encode_audio) {
       if (encode_video &&
           (!encode_audio ||
@@ -396,7 +407,7 @@ public:
     if (!_is_video_callback_enabled()) {
       throw std::runtime_error("video callback not enabled");
     }
-    run();
+    _configure_streams();
     auto stream_start = std::chrono::steady_clock::now();
     const double frame_duration = 1.0 / fps_;  // Duration of one frame in seconds
     int frames = 0;
@@ -430,7 +441,6 @@ public:
           encode_audio = !write_audio_frame(oc, &audio_st);
         }
       }
-      if (!running_) break;
     }
   }
 
@@ -955,33 +965,6 @@ private:
         }
       }
     }
-
-    //
-    //
-    //        int x, y, i, ret;
-    //
-    //        /* when we pass a frame to the encoder, it may keep a reference to it
-    //         * internally;
-    //         * make sure we do not overwrite it here
-    //         */
-    //        ret = av_frame_make_writable(pict);
-    //        if (ret < 0)
-    //            exit(1);
-    //
-    //        i = frame_index;
-    //
-    //        /* Y */
-    //        for (y = 0; y < height; y++)
-    //            for (x = 0; x < width; x++)
-    //                pict->data[0][y * pict->linesize[0] + x] = static_cast<uint8_t>(x + y + i * 3);
-    //
-    //        /* Cb and Cr */
-    //        for (y = 0; y < height / 2; y++) {
-    //            for (x = 0; x < width / 2; x++) {
-    //                pict->data[1][y * pict->linesize[1] + x] = static_cast<uint8_t>(128 + y + i * 2);
-    //                pict->data[2][y * pict->linesize[2] + x] = static_cast<uint8_t>(64 + x + i * 5);
-    //            }
-    //        }
   }
 
   AVFrame *get_video_frame(OutputStream *ost) {
