@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#define __STDC_CONSTANT_MACROS
 /*
  * Copyright (c) 2003 Fabrice Bellard
  *
@@ -43,6 +42,31 @@
 #include <functional>
 #include <iostream>
 #include <thread>
+#include <utility>
+
+template <typename F>
+class scope_guard {
+  F f;
+  bool active = true;
+
+public:
+  scope_guard(F &&f) : f(std::forward<F>(f)) {}
+  ~scope_guard() {
+    if (active) f();
+  }
+  void dismiss() { active = false; }
+  scope_guard(scope_guard &&) = default;
+  scope_guard &operator=(scope_guard &&) = default;
+  scope_guard(const scope_guard &) = delete;
+  scope_guard &operator=(const scope_guard &) = delete;
+};
+
+namespace sg {
+template <typename F>
+scope_guard<F> make_scope_guard(F &&f) {
+  return scope_guard<F>(std::forward<F>(f));
+}
+}  // namespace sg
 
 // As shown in below comment, this code was based on the muxing.c example from the FFmpeg source code.
 // Then kept up to date with the latest FFmpeg API changes since version +/- 3.0.
@@ -65,35 +89,14 @@
 #include <cstring>
 
 extern "C" {
-#define __STDC_CONSTANT_MACROS
-#ifndef __clang__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wattributes"
-#endif
-#include <libavutil/avassert.h>
-#ifndef __clang__
-#pragma GCC diagnostic pop
-#endif
 #include <libavcodec/avcodec.h>
+#include <libavcodec/codec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/avassert.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
-
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wreserved-user-defined-literal"
-#else
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wliteral-suffix"
-#endif
 #include <libavutil/timestamp.h>
-#ifdef __clang__
-#pragma clang diagnostic pop
-#else
-#pragma GCC diagnostic pop
-#endif
-
-#include <libavformat/avformat.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
@@ -525,35 +528,36 @@ private:
     ost->enc = c;
 
     switch ((*codec)->type) {
-      case AVMEDIA_TYPE_AUDIO:
-        c->sample_fmt = (*codec)->sample_fmts ? (*codec)->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
+      case AVMEDIA_TYPE_AUDIO: {
+        // c->sample_fmt = (*codec)->sample_fmts ? (*codec)->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
+        c->sample_fmt = AV_SAMPLE_FMT_FLTP;
         c->bit_rate = 64000;
         c->sample_rate = 44100;
+
         if ((*codec)->supported_samplerates) {
           c->sample_rate = (*codec)->supported_samplerates[0];
           for (i = 0; (*codec)->supported_samplerates[i]; i++) {
-            if ((*codec)->supported_samplerates[i] == 44100) c->sample_rate = 44100;
+            if ((*codec)->supported_samplerates[i] == 44100) {
+              c->sample_rate = 44100;
+              break;
+            }
           }
         }
+
         // Initialize default stereo layout
         av_channel_layout_default(&c->ch_layout, 2);  // 2 for stereo
 
         // Check codec's supported channel layouts
         if ((*codec)->ch_layouts) {
-          // Try to find stereo layout in supported layouts
+          AVChannelLayout stereo_layout = { .order = AV_CHANNEL_ORDER_NATIVE };
+          av_channel_layout_from_mask(&stereo_layout, AV_CH_LAYOUT_STEREO);
+
           for (i = 0; (*codec)->ch_layouts[i].nb_channels; i++) {
-            AVChannelLayout stereo_layout;
-            memset(&stereo_layout, 0, sizeof(AVChannelLayout));
-
-            av_channel_layout_from_mask(&stereo_layout, AV_CH_LAYOUT_STEREO);
-
             if (av_channel_layout_compare(&(*codec)->ch_layouts[i], &stereo_layout) == 0) {
-              // Found stereo layout, use it
               av_channel_layout_copy(&c->ch_layout, &stereo_layout);
               break;
             }
 
-            // If stereo not found, use first supported layout
             if (i == 0) {
               av_channel_layout_copy(&c->ch_layout, &(*codec)->ch_layouts[0]);
             }
@@ -567,7 +571,7 @@ private:
           c->thread_count = num_threads_;
         }
         break;
-
+      }
       case AVMEDIA_TYPE_VIDEO:
         c->codec_id = codec_id;
         c->bit_rate = bitrate_;
@@ -778,13 +782,18 @@ private:
    */
   int write_audio_frame(AVFormatContext *oc, OutputStream *ost) {
     AVCodecContext *c;
-    AVPacket pkt = {nullptr};  // data and size must be 0;
     AVFrame *frame;
     int ret;
     int got_packet;
     int64_t dst_nb_samples;
 
-    av_init_packet(&pkt);
+    AVPacket *pkt = av_packet_alloc();
+    if (!pkt) {
+      printf("av_packet_alloc failed\n");
+      return AVERROR(ENOMEM);
+    }
+    auto guard = sg::make_scope_guard([&] { av_packet_free(&pkt); });
+
     c = ost->enc;
 
     frame = get_audio_frame(ost);
@@ -822,19 +831,12 @@ private:
       ost->samples_count += dst_nb_samples;
     }
 
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#else
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
     ret = avcodec_send_frame(c, frame);
     if (ret < 0) {
       return ret;
     }
 
-    ret = avcodec_receive_packet(c, &pkt);
+    ret = avcodec_receive_packet(c, pkt);
     if (ret >= 0) {
       got_packet = 1;
     } else if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
@@ -844,19 +846,13 @@ private:
       return ret;
     }
 
-#ifdef __clang__
-#pragma clang diagnostic pop
-#else
-#pragma GCC diagnostic pop
-#endif
-
     if (ret < 0) {
       fprintf(stderr, "Error encoding audio frame: %s\n", av_err2str(ret));
       exit(1);
     }
 
     if (got_packet) {
-      ret = write_frame(oc, &c->time_base, ost->st, &pkt);
+      ret = write_frame(oc, &c->time_base, ost->st, pkt);
       if (ret < 0) {
         fprintf(stderr, "Error while writing audio frame: %s\n", av_err2str(ret));
         exit(1);
@@ -1035,35 +1031,32 @@ private:
     AVCodecContext *c;
     AVFrame *frame;
     int got_packet = 0;
-    AVPacket pkt = {nullptr};
 
     c = ost->enc;
 
     frame = get_video_frame(ost);
 
-    av_init_packet(&pkt);
+    AVPacket *pkt = av_packet_alloc();
+    if (!pkt) {
+      printf("av_packet_alloc failed\n");
+      return AVERROR(ENOMEM);
+    }
+    auto guard = sg::make_scope_guard([&] { av_packet_free(&pkt); });
 
     /* encode the image */
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#else
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
     ret = avcodec_send_frame(c, frame);
     if (ret < 0) {
       return ret;
     }
 
-    ret = avcodec_receive_packet(c, &pkt);
+    ret = avcodec_receive_packet(c, pkt);
 
     if (ret >= 0) {
-      if (pkt.duration == 0) {
+      if (pkt->duration == 0) {
         if (c->codec_type == AVMEDIA_TYPE_AUDIO) {
-          pkt.duration = frame->nb_samples;
+          pkt->duration = frame->nb_samples;
         } else if (c->codec_type == AVMEDIA_TYPE_VIDEO) {
-          pkt.duration = av_rescale_q(1, c->time_base, ost->enc->time_base);
+          pkt->duration = av_rescale_q(1, c->time_base, ost->enc->time_base);
         }
       }
       got_packet = 1;
@@ -1074,18 +1067,13 @@ private:
       return ret;
     }
 
-#ifdef __clang__
-#pragma clang diagnostic pop
-#else
-#pragma GCC diagnostic pop
-#endif
     if (ret < 0) {
       fprintf(stderr, "Error encoding video frame: %s\n", av_err2str(ret));
       exit(1);
     }
 
     if (got_packet) {
-      ret = write_frame(oc, &c->time_base, ost->st, &pkt);
+      ret = write_frame(oc, &c->time_base, ost->st, pkt);
     } else {
       ret = 0;
     }
