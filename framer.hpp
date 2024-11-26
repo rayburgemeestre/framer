@@ -482,14 +482,27 @@ public:
 private:
   void log_packet(const AVFormatContext *fmt_ctx, const AVPacket *pkt) {
     AVRational *time_base = &fmt_ctx->streams[pkt->stream_index]->time_base;
-    printf("pts:%s pts_time:%s dts:%s dts_time:%s duration:%s duration_time:%s stream_index:%d\n",
-           av_ts2str(pkt->pts),
-           av_ts2timestr(pkt->pts, time_base),
-           av_ts2str(pkt->dts),
-           av_ts2timestr(pkt->dts, time_base),
-           av_ts2str(pkt->duration),
-           av_ts2timestr(pkt->duration, time_base),
-           pkt->stream_index);
+    char buf[512] = {0x00};
+    snprintf(buf,
+             512,
+             "pts:%s pts_time:%s dts:%s dts_time:%s duration:%s duration_time:%s stream_index:%d\n",
+             av_ts2str(pkt->pts),
+             av_ts2timestr(pkt->pts, time_base),
+             av_ts2str(pkt->dts),
+             av_ts2timestr(pkt->dts, time_base),
+             av_ts2str(pkt->duration),
+             av_ts2timestr(pkt->duration, time_base),
+             pkt->stream_index);
+    buf[512 - 1] = 0x00;
+    if (!global_this) {
+      printf("%s", buf);
+      return;
+    }
+    global_this->log_callback_buffer.append(buf);
+    if (global_this->log_callback_buffer[global_this->log_callback_buffer.size() - 1] == '\n') {
+      global_this->log_callback(global_this->log_callback_level, global_this->log_callback_buffer);
+      global_this->log_callback_buffer = "";
+    }
   }
 
   int write_frame(AVFormatContext *fmt_ctx, const AVRational *time_base, AVStream *st, AVPacket *pkt) {
@@ -505,7 +518,6 @@ private:
   /* Add an output stream. */
   void add_stream(OutputStream *ost, AVFormatContext *oc, const AVCodec **codec, enum AVCodecID codec_id) {
     AVCodecContext *c;
-    int i;
 
     /* find the encoder */
     *codec = avcodec_find_encoder(codec_id);
@@ -529,11 +541,40 @@ private:
 
     switch ((*codec)->type) {
       case AVMEDIA_TYPE_AUDIO: {
-        // c->sample_fmt = (*codec)->sample_fmts ? (*codec)->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
-        c->sample_fmt = AV_SAMPLE_FMT_FLTP;
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+        // This is for our custom ffmpeg version build
+        const enum AVSampleFormat *p = NULL;
+        avcodec_get_supported_config(NULL, *codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, (const void **)&p, NULL);
+        c->sample_fmt = p ? p[0] : AV_SAMPLE_FMT_FLTP;
         c->bit_rate = 64000;
         c->sample_rate = 44100;
+#else
+        c->sample_fmt = (*codec)->sample_fmts ? (*codec)->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
+        int i = 0;
+#endif
 
+        c->bit_rate = 64000;
+        c->sample_rate = 44100;
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+        int *supported_samplerates = nullptr;
+        avcodec_get_supported_config(
+            NULL, *codec, AV_CODEC_CONFIG_SAMPLE_RATE, 0, (const void **)&supported_samplerates, NULL);
+
+        // This is for our custom ffmpeg version build
+        if (supported_samplerates) {
+          c->sample_rate = supported_samplerates[0];
+          // Look for 44.1kHz specifically
+          for (int i = 0; supported_samplerates[i]; i++) {
+            if (supported_samplerates[i] == 44100) {
+              c->sample_rate = 44100;
+              break;
+            }
+          }
+          // Free the allocated memory
+          // below crashes
+          // av_free(supported_samplerates);
+        }
+#else
         if ((*codec)->supported_samplerates) {
           c->sample_rate = (*codec)->supported_samplerates[0];
           for (i = 0; (*codec)->supported_samplerates[i]; i++) {
@@ -543,13 +584,51 @@ private:
             }
           }
         }
+#endif
 
         // Initialize default stereo layout
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+        if (av_channel_layout_from_mask(&c->ch_layout, AV_CH_LAYOUT_STEREO) < 0) {
+          fprintf(stderr, "Could not set stereo layout\n");
+          exit(1);
+        }
+#else
         av_channel_layout_default(&c->ch_layout, 2);  // 2 for stereo
+#endif
 
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+        // Get supported channel layouts
+        const AVChannelLayout *supported_layouts = nullptr;
+        avcodec_get_supported_config(
+            NULL, *codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT, 0, (const void **)&supported_layouts, NULL);
+
+        if (supported_layouts) {
+          // Create our desired stereo layout
+          AVChannelLayout stereo_layout = {.order = AV_CHANNEL_ORDER_NATIVE};
+          av_channel_layout_from_mask(&stereo_layout, AV_CH_LAYOUT_STEREO);
+
+          // Look for stereo support in the supported layouts
+          for (int i = 0; supported_layouts[i].nb_channels; i++) {
+            if (av_channel_layout_compare(&supported_layouts[i], &stereo_layout) == 0) {
+              av_channel_layout_copy(&c->ch_layout, &stereo_layout);
+              break;
+            }
+
+            // Store first layout as fallback
+            if (i == 0) {
+              av_channel_layout_copy(&c->ch_layout, &supported_layouts[0]);
+            }
+          }
+
+          // Clean up our temporary layout
+          // TODO: is this correct, it doesn't crash as with the sample rates
+          av_channel_layout_uninit(&stereo_layout);
+          av_free((void *)supported_layouts);
+        }
+#else
         // Check codec's supported channel layouts
         if ((*codec)->ch_layouts) {
-          AVChannelLayout stereo_layout = { .order = AV_CHANNEL_ORDER_NATIVE };
+          AVChannelLayout stereo_layout = {.order = AV_CHANNEL_ORDER_NATIVE};
           av_channel_layout_from_mask(&stereo_layout, AV_CH_LAYOUT_STEREO);
 
           for (i = 0; (*codec)->ch_layouts[i].nb_channels; i++) {
@@ -563,6 +642,7 @@ private:
             }
           }
         }
+#endif
 
         ost->st->time_base = AVRational{1, audio_st.enc->sample_rate};  // Usually 1/44100
         c->time_base = ost->st->time_base;
